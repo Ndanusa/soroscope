@@ -10,5 +10,9 @@ members = [
     "contracts/cross_call",
     "contracts/factory",
     "contracts/math",
+    "contracts/timelocked_escrow",
+]
+
+exclude = [
     "contracts/typed_data_auth",
 ]
