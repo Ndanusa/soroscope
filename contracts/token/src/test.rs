@@ -3,6 +3,8 @@ use emergency_guard::PauseType;
 use soroban_sdk::{testutils::Address as _, vec, Address, Env, String};
 
 // ── Existing Tests ─────────────────────────────────────────────────────────────
+use emergency_guard::{GuardError, PauseType};
+use soroban_sdk::{testutils::Address as _, vec, Address, Env, String};
 
 #[test]
 fn test_mint_and_transfer() {
@@ -67,6 +69,8 @@ fn test_allowance() {
 /// transfers untouched — confirms the PauseState bitmask works correctly.
 #[test]
 fn test_pause_minting_blocks_mint_only() {
+#[test]
+fn test_guard_initializes_with_token_admin() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -104,6 +108,22 @@ fn test_pause_minting_blocks_mint_only() {
 /// but leaves minting unaffected.
 #[test]
 fn test_pause_transfers_blocks_transfer_only() {
+    client.initialize(
+        &admin,
+        &7,
+        &String::from_str(&env, "Test Token"),
+        &String::from_str(&env, "TEST"),
+    );
+
+    let admins = client.guard_admins();
+    assert_eq!(admins.len(), 1);
+    assert_eq!(admins.get(0).unwrap(), admin);
+    assert_eq!(client.guard_threshold(), 1);
+    assert!(!client.guard_is_paused(&PauseType::TRANSFER));
+}
+
+#[test]
+fn test_guard_pause_blocks_transfer_until_resume() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -138,6 +158,30 @@ fn test_pause_transfers_blocks_transfer_only() {
 /// Verifies that pausing burning blocks burn/burn_from.
 #[test]
 fn test_pause_burning_blocks_burn() {
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &7,
+        &String::from_str(&env, "Test Token"),
+        &String::from_str(&env, "TEST"),
+    );
+    client.mint(&user1, &1000);
+
+    client.guard_pause(&admin, &PauseType::TRANSFER, &true);
+    assert!(client.guard_is_paused(&PauseType::TRANSFER));
+
+    let transfer_result = client.try_transfer(&user1, &user2, &100);
+    assert!(transfer_result.is_err());
+
+    client.guard_pause(&admin, &PauseType::TRANSFER, &false);
+    client.transfer(&user1, &user2, &100);
+    assert_eq!(client.balance(&user1), 900);
+    assert_eq!(client.balance(&user2), 100);
+}
+
+#[test]
+fn test_emergency_pause_blocks_mint_and_burn_until_resume() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -175,6 +219,28 @@ fn test_pause_burning_blocks_burn() {
 /// controls all operation types — no extra ledger entries.
 #[test]
 fn test_emergency_pause_all_freezes_everything() {
+    client.initialize(
+        &admin,
+        &7,
+        &String::from_str(&env, "Test Token"),
+        &String::from_str(&env, "TEST"),
+    );
+    client.mint(&user, &1000);
+
+    client.emergency_pause(&vec![&env, admin.clone()]);
+    assert!(client.guard_is_paused(&PauseType::MINT));
+    assert!(client.guard_is_paused(&PauseType::BURN));
+    assert!(client.try_mint(&user, &100).is_err());
+    assert!(client.try_burn(&user, &100).is_err());
+
+    client.guard_resume(&vec![&env, admin.clone()]);
+    client.mint(&user, &100);
+    client.burn(&user, &50);
+    assert_eq!(client.balance(&user), 1050);
+}
+
+#[test]
+fn test_guard_admin_management() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -226,6 +292,34 @@ fn test_emergency_pause_all_freezes_everything() {
 /// extra footprint entries.
 #[test]
 fn test_guard_admin_queries() {
+    let new_admin = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &7,
+        &String::from_str(&env, "Test Token"),
+        &String::from_str(&env, "TEST"),
+    );
+
+    assert_eq!(
+        client.try_guard_add_admin(&vec![&env, stranger], &new_admin),
+        Err(Ok(GuardError::InsufficientSignatures))
+    );
+
+    client.guard_add_admin(&vec![&env, admin.clone()], &new_admin);
+    let admins = client.guard_admins();
+    assert_eq!(admins.len(), 2);
+    assert!(admins.iter().any(|a| a == admin));
+    assert!(admins.iter().any(|a| a == new_admin));
+
+    client.guard_remove_admin(&vec![&env, admin.clone()], &new_admin);
+    let admins = client.guard_admins();
+    assert_eq!(admins.len(), 1);
+    assert_eq!(admins.get(0).unwrap(), admin);
+}
+
+#[test]
+fn test_set_admin_rotates_token_and_guard_admin() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -282,4 +376,24 @@ fn test_initialize_storage_efficiency() {
     assert_eq!(client.name(), String::from_str(&env, "Efficiency Token"));
     assert_eq!(client.symbol(), String::from_str(&env, "EFFT"));
     assert_eq!(client.get_guard_threshold(), 1);
+    let new_admin = Address::generate(&env);
+    client.initialize(
+        &admin,
+        &7,
+        &String::from_str(&env, "Test Token"),
+        &String::from_str(&env, "TEST"),
+    );
+
+    client.set_admin(&new_admin);
+
+    let admins = client.guard_admins();
+    assert_eq!(admins.len(), 1);
+    assert_eq!(admins.get(0).unwrap(), new_admin);
+    assert_eq!(
+        client.try_guard_pause(&admin, &PauseType::MINT, &true),
+        Err(Ok(GuardError::Unauthorized))
+    );
+
+    client.guard_pause(&new_admin, &PauseType::MINT, &true);
+    assert!(client.guard_is_paused(&PauseType::MINT));
 }
