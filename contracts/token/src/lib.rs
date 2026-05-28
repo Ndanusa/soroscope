@@ -10,6 +10,7 @@ mod storage_types;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
+mod test_granular_pause;
 mod test_admin_rotation;
 mod test_multisig;
 
